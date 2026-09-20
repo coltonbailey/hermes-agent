@@ -7829,6 +7829,62 @@ def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.Bound
             semaphore.release()
 
 
+def _fire_aux_pre_api_request_hook(
+    task: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+    base_url: Optional[str],
+    api_key: Optional[str],
+    api_mode: Optional[str],
+    messages: list,
+    *,
+    request_id: Optional[str] = None,
+) -> None:
+    """Fire ``pre_api_request`` for an auxiliary (non-main-loop) LLM call.
+
+    Mirrors the conversation-loop hook surface as closely as the aux context allows.
+    The hook is fire-and-forget (return value ignored) — same contract as the main loop.
+    Any failure is silently swallowed so a misbehaving observer can't break aux dispatch.
+    """
+    if not task and not model and not provider:
+        return
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
+        if not has_hook("pre_api_request"):
+            return
+        _invoke_hook(
+            "pre_api_request",
+            task_id=None,
+            turn_id=None,
+            api_request_id=request_id or "",
+            session_id="",
+            user_message=None,
+            conversation_history=list(messages) if isinstance(messages, list) else [],
+            platform="",
+            model=model or "",
+            provider=provider or "",
+            base_url=base_url or "",
+            api_mode=api_mode or "",
+            api_call_count=0,
+            retry_count=0,
+            request_messages=list(messages) if isinstance(messages, list) else [],
+            message_count=len(messages) if isinstance(messages, list) else 0,
+            tool_count=0,
+            approx_input_tokens=0,
+            request_char_count=sum(
+                len(str(m.get("content", "")) or "")
+                for m in (messages if isinstance(messages, list) else [])
+            ),
+            max_tokens=0,
+            started_at=time.time(),
+            middleware_trace=[],
+            request={},
+            _aux_task=task or "",
+        )
+    except Exception:
+        pass
+
+
 def _plan_aux_call(
     task: Optional[str], *, async_mode: bool, provider: Optional[str], model: Optional[str],
     base_url: Optional[str], api_key: Optional[str], main_runtime: Optional[Dict[str, Any]],
@@ -7920,6 +7976,12 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+    )
+    _fire_aux_pre_api_request_hook(
+        task=task, provider=req.resolved_provider, model=req.resolved_model,
+        base_url=req.base_info if req.base_info else None,
+        api_key=req.resolved_api_key, api_mode=req.resolved_api_mode,
+        messages=messages, request_id=None,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
@@ -8103,6 +8165,12 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=None, api_mode=None, route_info=route_info,
+    )
+    _fire_aux_pre_api_request_hook(
+        task=task, provider=req.resolved_provider, model=req.resolved_model,
+        base_url=req.base_info if req.base_info else None,
+        api_key=req.resolved_api_key, api_mode=req.resolved_api_mode,
+        messages=messages, request_id=None,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     try:
